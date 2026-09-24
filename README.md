@@ -49,13 +49,15 @@ There are two client configurations. `broken` is how the app runs today and `fix
 
 How the scenarios combine them:
 
-| Target | Config | Trigger | Simulates |
-|---|---|---|---|
-| `make broken-delete` | broken | `kubectl delete pod` under load | Rollout, scale-down, node drain |
-| `make broken-liveness` | broken | Liveness probe forced to fail | kubelet restarting an unhealthy pod |
-| `make fixed-delete` | fixed | `kubectl delete pod` under load | Same as above, with the fixes |
-| `make fixed-liveness` | fixed | Liveness probe forced to fail | Same as above, with the fixes |
-| `make broken-close-cache` | broken | `POST /admin/close-cache` | App or library code calling `cache.close()` while the pod keeps running |
+| Target | Trigger | Simulates | Geode shutdown hook | Cache closed by | Poller stopped first | preStop | Grace period | Expected result |
+|---|---|---|---|---|---|---|---|---|
+| `make broken-delete` | `kubectl delete pod` under load | Rollout, scale-down, node drain | On | Geode hook, at SIGTERM | No | None | 30s | `CacheClosedException` on puts and polls, some 500s |
+| `make broken-liveness` | Liveness probe forced to fail | kubelet restarting an unhealthy pod | On | Geode hook, at SIGTERM | No | None | 30s | Same errors, plus exit code 143 and dropped connections |
+| `make fixed-delete` | `kubectl delete pod` under load | Rollout, scale-down, node drain | **Off** | **Spring, after the drain** | **Yes** | **`sleep 15`** | **60s** | No errors, all 200s |
+| `make fixed-liveness` | Liveness probe forced to fail | kubelet restarting an unhealthy pod | **Off** | **Spring, after the drain** | **Yes** | **`sleep 15`** | **60s** | No `CacheClosedException`; dropped connections remain (pod stays in the Service) |
+| `make broken-close-cache` | `POST /admin/close-cache` | App or library code calling `cache.close()` | On (not involved) | App code, while running | No | None | 30s | Errors keep coming while the pod stays Running/Ready |
+
+Bold marks the settings that differ from today's config.
 
 Everything else is the same in all runs: the Geode 1.15.1 locator and server, the `Account` and `Config` regions, and 10 concurrent load workers sending 3s requests.
 
