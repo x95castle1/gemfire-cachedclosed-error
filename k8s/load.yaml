@@ -1,0 +1,27 @@
+# 10 workers, each sending sequential requests through the Service, so about 10 requests
+# (3s each) are always in flight. Prints "<UTC time> w<worker> <http code>" per request.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load
+  labels:
+    app: load
+spec:
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: load
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c"]
+      args:
+        - |
+          for w in 1 2 3 4 5 6 7 8 9 10; do
+            (
+              n=0
+              while true; do
+                n=$((n+1))
+                code=$(curl -s -o /dev/null -m 30 -w '%{http_code}' "http://repro-client:8080/account/w$w-$n")
+                echo "$(date -u +%H:%M:%S) w$w $code"
+              done
+            ) &
+          done
+          wait

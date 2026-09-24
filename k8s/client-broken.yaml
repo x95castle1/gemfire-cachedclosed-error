@@ -1,0 +1,60 @@
+# Current production behavior: Geode's JVM shutdown hook enabled, no preStop, default grace period.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repro-client
+  labels:
+    app: repro-client
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: repro-client
+  template:
+    metadata:
+      labels:
+        app: repro-client
+        mode: broken
+    spec:
+      containers:
+        - name: app
+          image: repro-client:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Drepro.mode=broken"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repro-client
+spec:
+  selector:
+    app: repro-client
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

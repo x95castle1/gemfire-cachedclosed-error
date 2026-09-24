@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geode
+  labels:
+    app: geode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: geode
+  template:
+    metadata:
+      labels:
+        app: geode
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: geode
+          image: geode-server:1.15.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOSTNAME_FOR_CLIENTS
+              value: geode
+          ports:
+            - name: locator
+              containerPort: 10334
+            - name: server
+              containerPort: 40404
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/data/ready"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geode
+spec:
+  selector:
+    app: geode
+  ports:
+    - name: locator
+      port: 10334
+      targetPort: 10334
+    - name: server
+      port: 40404
+      targetPort: 40404

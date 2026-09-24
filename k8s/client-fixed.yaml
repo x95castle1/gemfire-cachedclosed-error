@@ -1,0 +1,66 @@
+# Proposed fix: preStop sleep, longer grace period, Geode's JVM shutdown hook disabled,
+# and (via repro.mode=fixed) the poller stopped and the cache closed by Spring after the drain.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repro-client
+  labels:
+    app: repro-client
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: repro-client
+  template:
+    metadata:
+      labels:
+        app: repro-client
+        mode: fixed
+    spec:
+      terminationGracePeriodSeconds: 60   # covers 15s preStop + up to 20s drain + cache close
+      containers:
+        - name: app
+          image: repro-client:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Drepro.mode=fixed -Dgemfire.disableShutdownHook=true"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repro-client
+spec:
+  selector:
+    app: repro-client
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
