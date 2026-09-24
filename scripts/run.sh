@@ -10,6 +10,16 @@ MODE="${1:-}"; TRIGGER="${2:-}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K=(kubectl --context k3d-geode-repro)
+
+# Runs share the cluster and the load pod; refuse to start while another run is in progress.
+LOCK="${ROOT}/logs/.run.lock"
+mkdir -p "${ROOT}/logs"
+if ! mkdir "${LOCK}" 2>/dev/null; then
+  echo "Another run is in progress. If none is, remove the stale lock: rmdir ${LOCK}" >&2
+  exit 1
+fi
+trap 'rmdir "${LOCK}" 2>/dev/null || true' EXIT
+
 OUT="${ROOT}/logs/${MODE}-${TRIGGER}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${OUT}"
 
@@ -69,6 +79,7 @@ wait "${LOG_PID}" 2>/dev/null || true
 "${K[@]}" logs load > "${OUT}/load.log" 2>&1 || true
 
 LOG="${OUT}/client.log"
+{
 echo
 echo "================ SUMMARY: ${MODE} / ${TRIGGER} (pod ${POD}) ================"
 echo "Failed Account puts (CacheClosedException): $(grep -c 'Exception while put Account' "${LOG}" || true)"
@@ -98,3 +109,4 @@ echo "-- Pod events:"
 grep -E 'Killing|Unhealthy|probe' "${OUT}/events.txt" || echo "(none)"
 echo
 echo "Evidence saved in ${OUT}"
+} 2>&1 | tee "${OUT}/summary.txt"

@@ -30,25 +30,59 @@ For the Geode source analysis, the production checklist and the fix code, see [A
 | `k8s/client-fixed.yaml` | The fix: preStop `sleep 15`, 60s grace period, `-Dgemfire.disableShutdownHook=true`, the poller disposed on `ContextClosedEvent`, and the cache closed in `@PreDestroy` after the graceful drain. |
 | `k8s/load.yaml` | 10 curl workers sending requests through the Service without pause, so about 10 requests are always in flight. |
 
-Both modes use `server.shutdown=graceful`.
+## Configurations
+
+There are two client configurations. `broken` is how the app runs today and `fixed` has the proposed fixes. They are identical except for the first six rows:
+
+| Setting | Where it's set | `broken` | `fixed` | Why it matters |
+|---|---|---|---|---|
+| **Geode JVM shutdown hook** | `JAVA_TOOL_OPTIONS` in `k8s/client-*.yaml` | On (default) | **Off**: `-Dgemfire.disableShutdownHook=true` | When on, it closes the cache the moment SIGTERM arrives |
+| **Who closes the cache** | `app/.../GeodeCacheCloser.java` | Geode's hook, at SIGTERM | **Spring `@PreDestroy`**, after in-flight requests finish | This ordering is the actual fix |
+| **Config poller** (`Flux.interval`) | `app/.../ConfigPoller.java` | Keeps running until the JVM exits | **Stopped on `ContextClosedEvent`**, before the drain | Stops the `get` errors on `parallel-1` |
+| **preStop hook** | `k8s/client-*.yaml` | None | **`sleep 15`** | Lets the pod drop out of the Service before SIGTERM |
+| **Grace period** (`terminationGracePeriodSeconds`) | `k8s/client-*.yaml` | 30s (default) | **60s** | Must cover preStop + drain + cache close, or the pod is SIGKILLed |
+| `repro.mode` | `JAVA_TOOL_OPTIONS` | `broken` | `fixed` | Switches rows 2–3 on in the app |
+| Spring graceful shutdown | `app/.../application.yml` | On, 20s timeout | On, 20s timeout | Same in both. On its own it doesn't help |
+| `ClientCache` bean | `app/.../GeodeConfig.java` | `destroyMethod = ""` | `destroyMethod = ""` | Same in both. Spring doesn't close it, like a cache the ccp library creates |
+| Liveness / readiness probes | `k8s/client-*.yaml` | `/actuator/health/*`, every 5s, 2 failures | Same | |
+| Replicas / resources | `k8s/client-*.yaml` | 2 pods, 512Mi request / 1Gi limit | Same | |
+
+How the scenarios combine them:
+
+| Target | Config | Trigger | Simulates |
+|---|---|---|---|
+| `make broken-delete` | broken | `kubectl delete pod` under load | Rollout, scale-down, node drain |
+| `make broken-liveness` | broken | Liveness probe forced to fail | kubelet restarting an unhealthy pod |
+| `make fixed-delete` | fixed | `kubectl delete pod` under load | Same as above, with the fixes |
+| `make fixed-liveness` | fixed | Liveness probe forced to fail | Same as above, with the fixes |
+| `make broken-close-cache` | broken | `POST /admin/close-cache` | App or library code calling `cache.close()` while the pod keeps running |
+
+Everything else is the same in all runs: the Geode 1.15.1 locator and server, the `Account` and `Config` regions, and 10 concurrent load workers sending 3s requests.
 
 ## Run it
 
 Needs Docker Desktop, k3d, kubectl, Maven and JDK 17.
 
 ```bash
-scripts/cluster-up.sh              # k3d cluster "geode-repro" + images + Geode server (switches kubectl context)
-
-scripts/run.sh broken delete       # kubectl delete pod under load
-scripts/run.sh broken liveness     # liveness probe failure -> kubelet restart
-scripts/run.sh fixed  delete
-scripts/run.sh fixed  liveness
-scripts/run.sh broken close-cache  # app code closes the cache while the pod stays up
-
-scripts/cluster-down.sh
+make up                  # k3d cluster "geode-repro" + images + Geode server (switches kubectl context)
+make all                 # run all five scenarios (~7 min), then print the results table
+make down                # delete the cluster
 ```
 
-Each run prints a summary and saves `client.log`, `load.log`, `events.txt` and `describe.txt` under `logs/<mode>-<trigger>-<timestamp>/`.
+Other targets (`make` with no arguments lists them all):
+
+| Target | What it does |
+|---|---|
+| `make broken-delete` | Today's config; the pod is deleted under load (like a rollout or scale-down) |
+| `make broken-liveness` | Today's config; the liveness probe fails and the kubelet restarts the container |
+| `make fixed-delete` / `make fixed-liveness` | The same two triggers with the fixed config |
+| `make broken-close-cache` | App code calls `cache.close()` while the pod keeps running |
+| `make broken` / `make fixed` | Both scenarios for that config |
+| `make results` | One line per scenario from its latest run |
+| `make rebuild` | Rebuild the client image after changing `app/` (the next run picks it up) |
+| `make status` / `make stop-load` / `make clean-logs` | Show pods / stop the load pod / delete `logs/` |
+
+Each run prints a summary. It saves `summary.txt`, `client.log`, `load.log`, `events.txt` and `describe.txt` under `logs/<mode>-<trigger>-<timestamp>/`. The same scenarios can also be run directly with `scripts/run.sh <broken|fixed> <delete|liveness|close-cache>`.
 
 ## Results (2026-09-24, k3d / k3s 1.30.3, Geode 1.15.1, JDK 17)
 
